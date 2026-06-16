@@ -1,0 +1,271 @@
+---
+title: "Joint-species distribution modelling with Hmsc (S1)"
+output: 
+  html_notebook: 
+    theme: cerulean
+---
+
+This script is a template to guide the application of joint species distribution modelling (jSDM) using the package Hmsc. This code is based primarily off the scripts provided in the book *Joint Species Distribution Modelling: With Applications in R* by Nerea Abrego and Otso Ovaskainen and by Dr. Fabrice Stephenson (University of Waikato).
+
+The primary purpose here is to predict the past, present, and future distributions of epi-megabenthic taxa on a New Zealand seamount as they relate to previous bottom trawl fishing impacts. The main data utilised here was derived from seafloor images collected by National Institute of Water and Atmospheric Research (NIWA) researchers using a towed camera five times between 2001 and 2020. These images were analysed by myself, Savannah Goode (VUW/NIWA), to collect species counts for use in jSDM. Commercial fisheries data was supplied by Ministry for Primary Industries and analysed by Dr. Malcolm Clark (NIWA) and myself to estimate the fine-scale fishing footprint within the study area. Multibeam data was collected and processed by Arne Pallentin.
+
+The script is separated into five steps (with this being the first):
+
+1. **Setting model structure and fitting the model.**
+
+2. Examining MCMC convergence.
+
+3. Evaluating model fit and comparing models.
+
+4. Exploring parameter estimates.
+
+5. Making predictions.
+
+***
+
+#### **Read in data**
+
+Set the working directory to the location of all the relevant files. Abrego and Ovaskainen also recommend creating the subdirectories 'data' and 'models' within the main directory. If running on a different computer or files moved, the wd parameter will have to be changed to match your file structure.
+```{r "setup", include = TRUE, echo = FALSE}
+library(knitr)
+opts_knit$set(root.dir = "C:/Users/goodes/OneDrive - Victoria University of Wellington - STAFF/R/chapter 4")
+#opts_knit$set(root.dir = "/Users/savannahgoode/OneDrive - Victoria University of Wellington - STAFF/R/chapter 4")
+opts_chunk$set(echo = TRUE)
+```
+
+```{r, echo = TRUE}
+wd = "C:/Users/goodes/OneDrive - Victoria University of Wellington - STAFF/R/chapter 4"
+#wd = "/Users/savannahgoode/OneDrive - Victoria University of Wellington - STAFF/R/chapter 4"
+setwd(wd)
+localDir = "."
+data.directory = file.path(localDir, "Data")
+model.directory = file.path(localDir, "Models")
+getwd()
+```
+
+Load Hmsc library and set seed so results are reproducible.
+```{r echo=TRUE, message=FALSE}
+library(Hmsc)
+set.seed(3)
+```
+
+Read in the data, set the factors to factors, and then examine the data.
+```{r}
+Y <- read.csv(file = "Data/YData-agg.csv", row.names = 1)
+XData <- read.csv(file = "Data/XData.csv", row.names = 1, stringsAsFactors=TRUE)
+TrData <- read.csv(file = "Data/TrData-agg.csv", row.names = 1,
+                   strip.white = TRUE,
+                   stringsAsFactors=TRUE)
+```
+
+XData should have 597 observations of 10 variables, and Y should be comprised of 597 observations of 42 variables (taxa). TrData should include 42 observations of 11 variables.
+
+Based on previous analyses of these data, I am choosing to subset the data by year. Therefore only data collected in 2009 (T3), 2015 (T4), and 2020 (T5) will be included in the analysis because the images are similar in quality, whereas images collected in 2001 (T1) and 2006 (T2) are of significantly lower quality.
+```{r message=FALSE}
+XData <- droplevels(subset(XData,time_step=="T3"|time_step=="T4"|time_step=="T5"))
+library(dplyr) #load dplyr to use %in% function
+Y <- Y[row.names(Y) %in% row.names(XData),]
+```
+The number of samples has been reduced to 478.
+
+***
+
+#### **Examine data**
+First check that the Y matrix looks okay. We need to have finite, numeric values.
+```{r}
+if (is.numeric(as.matrix(Y)) || is.logical(as.matrix(Y)) && is.finite(sum(Y, na.rm=TRUE))) {
+    print("Y looks OK")
+} else {
+	print("Y should be numeric and have finite values")	}
+```
+Since Y looks okay we are good to go ahead and examine taxon prevalence and richness across samples. For taxon richness, y corresponds to the number of sampling units and x corresponds to the number of taxa observed in a single unit. For prevalence, y corresponds to the number of taxa and x is the fraction of samples in which the taxon is present.
+```{r, fig.width=5,fig.height=2.5}
+# calculate richness as the sum of columns across a row with values greater than 0 
+S = rowSums(Y>0) 
+# calculate prevalence as the average number of instances of a given taxon across rows
+P = colMeans(Y>0) 
+range(S) #richness range
+range(P) #prevalence range
+par(mfrow=c(1,2)) #plot histograms
+hist(S, xlab = "Taxon richness (S)", main = "")
+hist(P, xlab = "Taxon prevalence (P)",xlim=c(0,1),breaks=10, main = "")
+```
+
+Taxon richness ranged from 1-20 and prevalence from 0 to 0.89. Now we can remove rare taxa from the Y matrix. We will define 'rare' taxa as those with fewer than 5 instances across all samples.
+```{r}
+raretaxa <- which(colSums(Y>0) < 5) #get names of taxa with <5 observations
+length(raretaxa) #calculate number of rare taxa
+Y <- Y[,-raretaxa] #remove rare raxa from Y matrix
+```
+Now plot richness and prevalence again.
+```{r, fig.width=5,fig.height=2.5}
+# calculate richness as the sum of columns across a row with values greater than 0 
+S = rowSums(Y>0) 
+# calculate prevalence as the average number of instances of a given taxon across rows
+P = colMeans(Y>0) 
+range(S) #richness range
+range(P) #prevalence range
+par(mfrow=c(1,2)) #plot histograms
+hist(S, xlab = "Taxon richness (S)", main = "")
+hist(P, xlab = "Taxon prevalence (P)",xlim=c(0,1),breaks=10, main = "")
+```
+Richness looks quite normal, but there are still many taxa that are quite uncommon across all samples. This is what you would expect with deep-sea benthic communities. Originally the Y matrix was not transformed, but based on model fit metrics obtained in Step 3, here I will examine how log-transforming abundance changes the frequency distribution of taxon abundance.
+```{r, fig.width=5,fig.height=2.5}
+par(mfrow=c(1,2)) #plot histograms
+hist(Y[Y>0], main = "Abundance COP", xlab = 'Abundance')
+hist(log(Y[Y > 0]), main = "Log abundance COP", xlab = 'Log abundance')
+```
+The log transformation seems to have made the distribution more normal, so let's transform the Y matrix. I will also scale the abundances so they are individuals per 25 $m^2$ prior to log-transforming.
+```{r}
+logY <- Y
+logY[logY==0] <- NA
+logY <- logY*25
+logY <- log(logY)
+if (is.numeric(as.matrix(logY)) || is.logical(as.matrix(logY)) && is.finite(sum(logY, na.rm=TRUE))) {
+    print("logY looks OK")
+} else {
+	print("logY should be numeric and have finite values")	}
+```
+
+Now examine the XData matrix.
+```{r}
+head(XData)
+```
+There are several factors to distinguish samples (time step, sector, and priority/additional), XY coordinates, and the environmental covariates depth, curvature, backscatter, number of tows, and time since last tow. The variable 'tsTow' (time since last tow) has an NA where nTows is 0. This is because in an area that has not been trawled, it is impossible to calculate the year of the last trawl. For now, I will set tsTow where nTows=0 to 50 for the first model run, but may come back to this issue if there is a clear relationship between this variable and species distributions.
+```{r}
+XData$tsTow <- XData$tsTow*-1
+XData$tsTow[is.na(XData$tsTow)] <- -200
+summary(XData$tsTow)
+```
+It's always a good idea to look at covariance prior to any analyses. This is easy to do with corrplot, which can be used to visualise variable correlations.
+```{r message=FALSE}
+library(corrplot)
+varcor <- cor(XData[,c(6:10)]) #calculate correlation of covariates 
+corrplot(varcor, diag = FALSE, #don't show diagonal
+         method = "number", #method indicates visualisation type (number, color, etc)
+         type = "lower")#type indicates the layout type (lower, upper, full)
+```
+This looks good. None of the variables are highly correlated.
+
+We can also examine the variable distributions to decide whether any transformations should be made.
+```{r, fig.width = 5, fig.height=3}
+par(mfrow = c(2,3))
+hist(XData$depth, xlab = "Depth (m)", main = "", ylab = "")
+hist(XData$curv, xlab = "Curvature", main = "", ylab = "")
+hist(XData$BS, xlab = "Backscatter (db)", main = "", ylab = "")
+hist(XData$nTows, xlab = "Number of tows", main = "", ylab = "")
+hist(XData$tsTow, xlab = "Years since last tow", main = "", ylab = "")
+```
+Most of the variables look good but probably a good idea to log-transform the number of tows since this variable shows a strong skew.
+```{r}
+XData$log.nTows <- log((XData$nTows)+1)
+par(mfrow = c(2,3))
+hist(XData$depth, xlab = "Depth (m)", main = "", ylab = "")
+hist(XData$curv, xlab = "Curvature", main = "", ylab = "")
+hist(XData$BS, xlab = "Backscatter (db)", main = "", ylab = "")
+hist(XData$log.nTows, xlab = "Log(Number of tows)", main = "", ylab = "")
+hist(XData$tsTow, xlab = "Years since last tow", main = "", ylab = "")
+```
+That looks better. Finally we can examine the trait data (TrData).
+```{r}
+head(TrData)
+```
+
+```{r}
+str(TrData)
+```
+Looks good.
+
+There are modes/categories corresponding to 11 traits. For now I will keep all of the traits. 
+Let's also remove taxa from the trait matrix that are no longer in the Y matrix.
+```{r}
+TrData <- TrData[row.names(TrData) %in% colnames(Y),]
+```
+
+Then we need to make sure the order of taxa matches across matrices.
+```{r}
+idx <- match(rownames(TrData),colnames(Y)) #match order of matrices
+Y <- Y[,idx] #reorder Y columns to match TrData rows
+identical(rownames(TrData),colnames(Y)) #check these are identical
+```
+Prior to performing HMSC, the rownames should match between the XData and Y matrices. Let's check.
+```{r}
+identical(rownames(XData),rownames(Y))
+```
+
+Success! That's all as far as the data wrangling goes.
+
+***
+
+#### **Define models**
+To use the Hmsc function to fit the models, we first need to define the formulas we will use. For the covariates we will use all the available variables, making sure to use log(nTows) instead of the untransformed values. We will also include the interaction between log(nTows) and tsTow. 
+
+For the trait formula we'll start by using all of the available traits, but can always come back to this later and reduce further.
+```{r}
+XFormula = ~ depth + curv + BS + log.nTows + tsTow + (log.nTows*tsTow)
+XData = XData[,c(4:11,13)]
+
+#XData = XData[,c(4:9,11,12,13)]
+#XFormula = ~ depth + curv + BS + log.nTows + tsClosure
+
+TrFormula = ~ Lifehabit + Bodyform + Structuralfragility + Motility +
+  Developmentmode + Bodysize.cm. + Reproductivemode + Longevity.years. +
+  Feedingmode + Regenerationpotential + Reproductiveperiodicity
+```
+
+To make a hurdle model, we need presence-absence and abundance conditional on presence. To do this, the Y matrix has to first be transformed to presence-absence. Then for the abundance matrix, we redefine all the zeros as NA and use the standardised abundance values. Since we already transformed and set NAs in the Y matrix above, here just redefine.
+```{r}
+Ypa <- 1*(Y>0)
+Yabu <- as.matrix(logY)
+```
+
+Now the models can be defined.
+```{r}
+#presence-absence model
+m.PA <- Hmsc(Y=Ypa, XData = XData, XFormula=XFormula,
+            TrData = TrData, TrFormula = TrFormula,
+            distr="probit")
+
+#abundance model (normal distribution)
+# here using log abundance (change if necessar)
+m.Abu <- Hmsc(Y=Yabu, XData = XData, XFormula=XFormula,
+            TrData = TrData, TrFormula = TrFormula,
+            distr="normal")
+
+models <- list(m.PA,m.Abu) #store as list (add other name if running addl models)
+modelnames <- c("PresAbs","Abundance") 
+save(models, modelnames, file = file.path(model.directory, "unfitted models")) #save to directory
+```
+
+***
+
+#### **Model fitting**
+Abrego and Ovaskainen recommend first fitting the models with lower sample and thinning parameters to start, then continue to developing the rest of the model script, then come back to this step if the models have not converged. Following this advice, here we store 100 posterior samples for each of 2 chains. This script loops over several thin values (1,10,100,1000) and the transient is set to 50*thin. However, with each increase in the thinning parameter, the script will take increasingly long to run. So it is important to first go through all the steps using thin = 1 and check the results before running through the rest of the loop. Once the rest of the script is finalised, then come back and run thin = 10, 100, 1000, etc. and adjust any other parameters required.
+```{r message=FALSE}
+nChains = 5
+nParallel = 5 # optional setting of nParallel
+samples = 200
+
+for (thin in c(10,100)) #,10,100,1000))
+{
+  transient = 50*thin
+  nm = length(models)
+  for (model in 1:nm){
+    start <- Sys.time()
+    print(paste0("model = ",modelnames[model]))
+    m <- models[[model]]
+    m <- sampleMcmc(m, thin = thin, samples = samples, transient = transient,
+                 nChains = nChains, nParallel = nParallel)
+    models[[model]] <- m
+    end <- Sys.time()
+    print(end-start)
+  }
+    filename <- paste("Models/model_chains_", as.character(nChains),
+                      "_samples_", as.character(samples),
+                      "_thin_", as.character(thin),
+                      ".Rdata", sep = "")
+  save(models,modelnames,file=filename)
+  }
+
+```
+

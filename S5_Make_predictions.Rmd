@@ -1,0 +1,929 @@
+---
+title: "Joint-species distribution modelling with Hmsc (S5)"
+output: html_notebook
+---
+This script is a template to guide the application of joint species distribution modelling (jSDM) using the package Hmsc. This code is based primarily off the scripts provided in the book *Joint Species Distribution Modelling: With Applications in R* by Nerea Abrego and Otso Ovaskainen and by Dr. Fabrice Stephenson (University of Waikato).
+
+The primary purpose here is to predict the past, present, and future distributions of epi-megabenthic taxa on a New Zealand seamount as they relate to previous bottom trawl fishing impacts. The main data utilised here was derived from seafloor images collected by National Institute of Water and Atmospheric Research (NIWA) researchers using a towed camera five times between 2001 and 2020. These images were analysed by myself, Savannah Goode (VUW/NIWA), to collect species counts for use in jSDM. Commercial fisheries data was supplied by Ministry for Primary Industries and analysed by Dr. Malcolm Clark (NIWA) and myself to estimate the fine-scale fishing footprint within the study area. Multibeam data was collected and processed by Arne Pallentin.
+
+The script is separated into five steps (with this being the third):
+
+1. Setting model structure and fitting the model.
+
+2. Examining MCMC convergence.
+
+3. Evaluating model fit and comparing models.
+
+4. Exploring parameter estimates.
+
+5. **Making predictions.**
+
+***
+
+#### **Read in data**
+
+Set the working directory to the location of all the relevant files. Abrego and Ovaskainen also recommend creating the subdirectories 'data' and 'models' within the main directory. If running on a different computer or files moved, the wd parameter will have to be changed to match your file structure.
+```{r "setup", include = TRUE, echo = FALSE, warning=FALSE}
+library(knitr)
+# change to match computer directory
+opts_knit$set(root.dir = "/Users/savannahgoode/OneDrive - Victoria University of Wellington - STAFF/R/chapter 4")
+#opts_knit$set(root.dir = "C:/Users/goodes/OneDrive - Victoria University of Wellington - STAFF/R/chapter 4")
+opts_chunk$set(echo = FALSE)
+```
+
+```{r}
+# change to match computer directory
+wd = "/Users/savannahgoode/OneDrive - Victoria University of Wellington - STAFF/R/chapter 4"
+#wd = "C:/Users/goodes/OneDrive - Victoria University of Wellington - STAFF/R/chapter 4"
+setwd(wd)
+localDir = "."
+data.directory = file.path(localDir, "Data")
+model.directory = file.path(localDir, "Models")
+getwd()
+```
+
+Load Hmsc library and set seed so results are reproducible.
+```{r, message=FALSE, warning=FALSE}
+library(Hmsc)
+set.seed(3)
+```
+
+First read in model objects. Make sure to load the *fitted* models with the highest thin values to get the most reliable results.
+```{r}
+# set parameters to load model
+# change these if needed
+nChains = 5
+samples = 200
+thin = 100
+filename=file.path(model.directory,
+                   paste0("model_chains_",as.character(nChains),
+                          "_samples_",as.character(samples),"_thin_",as.character(thin),
+                          ".Rdata",sep=""))
+load(filename)
+
+# make sure the right models were loaded
+nm <- length(models)
+for(i in 1:nm){
+  print(paste0("model = ",modelnames[i]))
+  print(models[[i]])
+}
+```
+***
+
+#### **Make gradient plots**
+Make gradient plots to visualise how the communities vary across environmental covariates.
+
+First plot how taxon richness varies with each environmental covariate.
+```{r, warning=FALSE, fig.height = 5, fig.width = 6, message=FALSE}
+m <- models[[1]]
+sp <- colnames(m$Y)
+covariates <- all.vars(m$XFormula)
+#covariates[6] <- "(log.nTows * tsTow)"
+#covariates <- covariates[c(1:3,5:6)]
+
+par(mfrow = c(2,3))
+for(k in 1:(length(covariates))){
+    covariate = covariates[[k]]
+    Gradient = constructGradient(m,focalVariable = covariate, non.focalVariables = 1)
+    predY = predict(m, Gradient=Gradient, expected = TRUE, predictEtaMean = TRUE)  
+    plotGradient(m, Gradient, pred=predY, measure="S", 
+                 showData = TRUE, showPosteriorSupport = FALSE)
+    }
+```
+
+Then export as PDF.
+```{r,warning=FALSE, echo=T}
+#filename = paste("Figures/Pres-Abs_predictions_Richness_type1.pdf")
+filename =  paste("Figures/Pres-Abs_predictions_Richness_type2.pdf")
+pdf(file = filename, height = 4.5, width = 4.5)
+  
+for(k in 1:(length(covariates))){
+    covariate = covariates[[k]]
+    Gradient = constructGradient(m,focalVariable = covariate)
+   # Gradient = constructGradient(m,focalVariable = covariate, non.focalVariables = 1)
+    predY = predict(m, Gradient=Gradient, expected = TRUE)  
+    plotGradient(m, Gradient, pred=predY, yshow = 0, measure="S", showData = TRUE, 
+                 main = paste0(modelnames[[1]],": summed response"))
+    }
+
+dev.off()
+```
+
+Let's examine how individual taxa vary across the different environmental gradients. Here we will just plot one taxon (Comatulid crinoids) as an example then save all results to a PDF.
+```{r, warning=FALSE}
+# presence-absence
+par(mfrow = c(2,3))
+for(k in 1:(length(covariates))){
+    m = models[[1]]
+    covariate = covariates[[k]]
+    Gradient = constructGradient(m,focalVariable = covariate, non.focalVariables = 1)
+    predY = predict(m, Gradient=Gradient, expected = TRUE)
+    plotGradient(m, Gradient, pred=predY, yshow = 0, measure="Y", 
+                 showData = TRUE, index = 13, showPosteriorSupport = FALSE)
+}
+
+# log abundance
+par(mfrow = c(2,3))
+for(k in 1:(length(covariates))){
+    m = models[[2]]
+    covariate = covariates[[k]]
+    Gradient = constructGradient(m,focalVariable = covariate, 
+                                 non.focalVariables = 1)
+    predY = predict(m, Gradient=Gradient, expected = TRUE, predictEtaMean = TRUE)
+    plotGradient(m, Gradient, pred=predY, yshow = 0, measure="Y", 
+                 showData = TRUE, index = 13, showPosteriorSupport = FALSE)
+    }
+```
+
+Now we can make all the same plots for each individual taxon and save the results to a pdf. 
+```{r, warning=FALSE,echo =TRUE}
+filename = paste("Figures/Pres-Abs_predictions_byTaxon_type2.pdf")
+#filename =  paste("Figures/Pres-Abs_predictions_byTaxon_type1.pdf") #change if needed depending on pred type
+pdf(file = filename, height = 4.5, width = 4.5)
+
+#par(mfrow = c(2,5))
+for(k in 1:length(covariates)){
+    m = models[[1]]
+    covariate = covariates[[k]]
+    Gradient = constructGradient(m,focalVariable = covariate)
+   # Gradient = constructGradient(m,focalVariable = covariate, non.focalVariables = 1)
+    predY = predict(m, Gradient=Gradient, expected = TRUE)
+    for(l in 1:length(sp)){
+        plotGradient(m, Gradient, pred=predY, yshow = 0, measure="Y", 
+                     showData = TRUE, index = l,
+                     showPosteriorSupport = TRUE)
+    }
+}
+
+filename =  paste("Figures/LogAbun_predictions_byTaxon_type2.pdf") 
+#filename =  paste("Figures/LogAbun_predictions_byTaxon_type1.pdf") #change if needed
+pdf(file = filename, height = 4.5, width = 4.5)
+
+for(k in 1:length(covariates)){
+    m = models[[2]]
+    covariate = covariates[[k]]
+    Gradient = constructGradient(m, focalVariable = covariate)
+  #  Gradient = constructGradient(m,focalVariable = covariate,non.focalVariables = 1)
+    predY = predict(m, Gradient=Gradient, expected = TRUE)
+    for(l in 1:length(sp)){
+        plotGradient(m, Gradient, pred=predY, yshow = 0, measure="Y", 
+                     showData = TRUE, index = l,
+                     showPosteriorSupport = TRUE)
+    }
+}
+dev.off()
+```
+
+We can also plot how community-weighted means of each trait vary with the environmental covariates.
+```{r, warning=FALSE, echo=TRUE}
+# presence-absence
+filename =  paste("Figures/Pres-Abs_predictions_byTrait.pdf")
+pdf(file = filename, height = 4.5, width = 4.5)
+
+m = models[[1]]
+nt <- m$nt
+tr <- colnames(m$Tr)
+
+for(k in 1:length(covariates)){
+    covariate = covariates[[k]]
+    Gradient = constructGradient(m,focalVariable = covariate,non.focalVariables = 1)
+    predY = predict(m, Gradient=Gradient, expected = TRUE)
+  #  par(mfrow = c(2,2))
+    for(l in 2:nt){
+        plotGradient(m, Gradient, pred=predY, yshow = 0, measure="T", 
+                     showData = TRUE, index = l,
+                     showPosteriorSupport = TRUE)
+    }
+}
+
+# abundance
+filename =  paste("Figures/LogAbun_predictions_byTrait.pdf")
+pdf(file = filename, height = 4.5, width = 4.5)
+
+m = models[[2]]
+nt <- m$nt
+tr <- colnames(m$Tr)
+
+for(k in 1:length(covariates)){
+    covariate = covariates[[k]]
+    Gradient = constructGradient(m,focalVariable = covariate,
+                                 non.focalVariables = 1)
+    predY = predict(m, Gradient=Gradient, expected = TRUE)
+  #  par(mfrow = c(2,2))
+    for(l in 2:nt){
+        plotGradient(m, Gradient, pred=predY, yshow = 0, measure="T", 
+                     showData = TRUE, index = l,
+                     showPosteriorSupport = TRUE)
+    }
+}
+dev.off()
+```
+
+We'll combine plots and save as PDFs too for easy inserting into documents.
+```{r}
+# change filename for different non.focalvariable types
+filename =  paste("Figures/PresAbs_predictionsALL_byTaxon_type1.pdf") #change if needed
+pdf(file = filename, height = 3, width = 15)
+
+for(l in 1:length(sp)){
+  par(mfrow = c(1,5))
+  for(k in 1:length(covariates)){
+    m = models[[1]]
+    covariate = covariates[[k]]
+    Gradient = constructGradient(m,focalVariable = covariate,
+                                 non.focalVariables = 1)
+    predY = predict(m, Gradient=Gradient, expected = TRUE)
+    plotGradient(m, Gradient, pred=predY, yshow = 0, measure="Y", 
+                 showData = TRUE, index = l,
+                 showPosteriorSupport = FALSE)
+}
+
+}
+
+filename =  paste("Figures/LogAbun_predictionsALL_byTaxon_type1.pdf") #change if needed
+pdf(file = filename, height = 3, width = 15)
+
+for(l in 1:length(sp)){
+  par(mfrow = c(1,5))
+  for(k in 1:length(covariates)){
+    m = models[[2]]
+    covariate = covariates[[k]]
+    Gradient = constructGradient(m,focalVariable = covariate,
+                                 non.focalVariables = 1)
+    predY = predict(m, Gradient=Gradient, expected = TRUE)
+    plotGradient(m, Gradient, pred=predY, yshow = 0, measure="Y", 
+                 showData = TRUE, index = l,
+                 showPosteriorSupport = FALSE)
+}
+
+  }
+dev.off()
+```
+
+
+
+#### **Make spatial predictions**
+
+First load the spatial data as a raster stack and check to make sure it looks right.
+```{r, echo = T}
+library(raster)
+#path <- file.path(data.directory, paste0("env-rasters2/backscatter.tif"))
+# backscatter
+r1 <- raster(file.path(data.directory, paste0("env-rasters2/backscatter.tif")))
+
+# curvature
+r2 <- raster(file.path(data.directory, paste0("env-rasters2/curv_07.tif")))
+
+# depth
+r3 <- raster(file.path(data.directory, paste0("env-rasters2/depth_01.tif")))
+
+# nTows
+r4 <- raster(file.path(data.directory, paste0("env-rasters2/nTows_2020.tif")))
+
+# tsTow
+r5 <- raster(file.path(data.directory, paste0("env-rasters2/ysTow_2020.tif")))
+r5 <- r5*-1
+
+# stack rasters
+rs <- stack(r1,r2,r3,r4,r5)
+#rs <- stack(r1,r2,r3,r4)
+
+# remove excess rasters
+rm(r1,r2,r3,r4,r5)
+#rm(r1,r2,r3,r4)
+
+# plot
+plot(rs)
+```
+
+Then convert rasters to xy data frame.
+```{r, echo = T}
+# convert to df
+rs.xy <- as.data.frame(rs, xy = TRUE) #raster stack as dataframe
+rs.xy$ysTow_2020[rs.xy$nTows_2020 == 0] <- -200 #change cells with no tows to ysTow = 50
+rs.xy <- na.omit(rs.xy) # remove NAs
+#rs.xy$tsClosure <- 19
+XData.grid <- rs.xy[,-c(1,2)] #remove XY columns
+summary(XData.grid)
+
+# check for NAs
+anyNA(XData.grid )
+
+# save XY to file
+xy <- as.matrix(cbind(rs.xy$x, rs.xy$y))
+colnames(xy)=c("X","Y")
+save(xy, file = "Output/xy.Rdata")
+```
+
+**IMPORTANT:** need to make sure any transformations applied in S1 to the covariates is applied here. The names and order of the columns in the 'XData.grid' dataframe should also match those in the Hmsc model object.
+```{r, echo = T}
+XData.grid$nTows_2020 <- log(XData.grid$nTows_2020+1)
+#colnames(XData.grid) <- c('BS','curv','depth','log.nTows','tsClosure')
+colnames(XData.grid) <- c('BS','curv','depth','log.nTows','tsTow')
+XData.grid <- XData.grid[,c(3,2,1,5,4)]
+str(XData.grid)
+```
+
+Now we use the prepareGradient function to convert the environmental predictors into a format that can be used by the predict function. We then will predict taxon occurrence (presence/absence) and log abundance conditional on present (abundance COP) to a grid.
+```{r, echo = T, warning=FALSE}
+# Presence-absence
+# prepareGradient
+Gradient <- prepareGradient(models[[1]], XDataNew = XData.grid) #this is where you add the interaction grid
+
+# predict taxon occurrence to grid
+nParallel = 2 # change nParallel to set number of cores used simultaneously
+start <- Sys.time()
+# using expected = TRUE to return probabilities, not occurrence
+predY <- predict(models[[1]], Gradient=Gradient, expected = TRUE, nParallel= nParallel)
+end <- Sys.time()
+end - start
+
+# save file
+#save(predY, file = "Output/predY_occ_realised.Rdata")
+
+# Log abundance
+Gradient <- prepareGradient(models[[2]], XDataNew = XData.grid)
+start <- Sys.time()
+predY2 <- predict(models[[2]], Gradient=Gradient, expected = TRUE, nParallel = nParallel)  
+end <- Sys.time()
+end - start
+#save(predY2, file = "Output/predY_Abun_realised.Rdata")
+```
+
+Using the predicted occurrence grid, we can now map the probability of occurrence and associated uncertainty.
+
+Start by defining the color palettes to be used for the maps.
+```{r warning=FALSE}
+library(scales)
+
+## hsi colors
+### original diverging (temps)
+palD <- colour_ramp(c('#009392','#39b185','#9ccb86','#e9e29c','#eeb479','#e88471','#cf597e'))
+palD.i <- palD(seq(0,1,length=10))
+
+## abundance colors 
+### original geyser diverging
+palCG <- colour_ramp(c('#008080','#70a494','#b4c8a8','#f6edbd','#edbb8a','#de8a5a','#ca562c'))
+palCG.i <- palCG(seq(0,1,length = 10))
+### white,yellow,red continuous
+palWYR <- colour_ramp(c('#fdffea', '#F6FF92','#FFC82F','#F16A16','#E7331A'))
+palWYR.i <- palWYR(seq(0,1,length=10))
+
+## uncertainty colors
+palCB <- colour_ramp(rev(c('#f7feae','#b7e6a5','#7ccba2','#46aea0','#089099','#00718b','#045275')))
+palCB.i <- palCB(seq(0,1,length=10))
+
+## hsi colors
+### pink-yellow continuous
+palCP <- colour_ramp(c('#fef6b5','#ffdd9a','#ffc285','#ffa679','#fa8a76','#f16d7a','#e15383'))
+palCP.i <- palCP(seq(0,1,length=10))
+### orange-red continuous
+palC <- colour_ramp(c('#f6d2a9','#f5b78e','#f19c7c','#ea8171','#dd686c','#ca5268','#b13f64'))
+palC.i <- palC(seq(0,1,length = 10))
+# blue,yellow,red
+palBYR <- colour_ramp(rev(c('#E7331A', '#F16A16', '#FFC82F', '#F6FF92', '#0D98BA', '#0074A5')))
+palBYR.i <- palBYR(seq(0,1,length = 10))
+# changing the fourth color b/c it's too green
+palBYR.i[4]<-'#b7dae2'
+show_col(palBYR.i)
+```
+
+Load the libraries and define functions needed to generate the distribution maps. 
+```{r}
+library(ggplot2)
+library(colorspace)
+library(ggpubr)
+
+# Convert the predY list to an array so we can average
+a.PA <- simplify2array(predY) # turn to arrray for averaging
+a.A <- simplify2array(predY2)
+
+# Define coefficient of variation (CV) function 
+cv <- function(x) abs(sd(x)/mean(x))
+```
+
+Plot predicted occurrence and abundance for the year 2020 (19 years post-closure).
+```{r, fig.height=7.5,fig.width=5.2, warning=FALSE}
+# create contour lines
+bathy <- raster(file.path(data.directory, "MORG_sp_ext.tif"))
+bathy.xy <- as.data.frame(bathy, xy = TRUE)
+bathy.xy <- na.omit(bathy.xy)
+
+# set taxa codes
+sp.codes <- read.csv(file = "Data/taxa-codes.csv")
+
+# load taxon occurrence positions
+library(sf)
+sp.occ <- read_sf("Data/occ.shp")
+sp.occ.df <- cbind.data.frame(sp.occ[,c(1:36)],st_coordinates(sp.occ))
+sp.occ.df[,c(1:36)][sp.occ.df[,c(1:36)] == 0] <- NA
+
+# load CV results
+library(readxl)
+auc <- read_excel("Figures/cross_val_Abundance.xlsx",sheet=2)
+auc$predAUC <- round(auc$`AUC: Predictive`,digits=2)
+
+r2 <- read_excel("Figures/cross_val_Abundance.xlsx",sheet=3)
+r2$predR2 <- round(r2$`R2: Predictive`,digits=2)
+```
+
+Make and save prediction plots to PDF file.
+```{r, fig.height=7.5,fig.width=5.2, warning=FALSE}
+# set filename for pdf to save to
+filename =  paste("Figures/Distribution_maps_all.pdf")
+pdf(file = filename, height = 7.5, width = 5, compress = FALSE)
+
+for (i in 1:length(sp)){
+  MpredY <- apply(a.PA[,i,], 1, mean) # calculate average occurrence probability
+  SDpredY <- apply(a.PA[,i,], 1, sd) # calculate SD in occurrence probability (uncertainty)
+  
+  MpredY2 <- apply(a.A[,i,], 1, mean) # calculate average log abundance
+  MpredY2 <- exp(MpredY2) #back transform
+  MpredY2 <- MpredY*MpredY2 #hurdle predictions
+  
+  SDpredY2 <- apply(a.A[,i,], 1, sd) # calculate SD in log abun (uncertainty)
+  SDpredY2 <- exp(SDpredY2) #back transform
+  SDpredY2 <- SDpredY*SDpredY2 #hurdle SD
+  
+ 
+   # convert arrays to dataframes and add the plot data
+  Mpred.xyz <- data.frame(x =xy[,1], y =xy[,2], z = MpredY)
+  SDpred.xyz <- data.frame(x =xy[,1], y =xy[,2],z = SDpredY)
+  Mpred.xyz2 <- data.frame(x =xy[,1], y =xy[,2], z = MpredY2)
+  SDpred.xyz2 <- data.frame(x =xy[,1], y =xy[,2],z = SDpredY2)
+  
+  # calculate abundance limits
+#  binw <- max(Mpred.xyz2$z)/10
+ # lims <- c(min(Mpred.xyz2$z), max(Mpred.xyz2$z))
+#  brk <- seq(lims[1],lims[2],by=binw)
+ # brk.labs <- round(brk, digits =2)
+  
+  q <- quantile(Mpred.xyz2$z, probs = seq(0.1,0.95, by = 0.05))
+#  print(q)
+  x95 = as.numeric(q[18])
+  brk = seq(0,x95,length.out=11)
+  brk = brk[2:10]
+  brk.labs <- signif(brk, digits = 2)
+  
+  # make occurrence df
+  sp.occ.i <- sp.occ.df[,c(i,38,39)]
+  sp.occ.i <- na.omit(sp.occ.i)
+  
+  # plot
+  a <- ggplot() +
+    annotate('text',x=max(Mpred.xyz$x),y=max(Mpred.xyz$y),
+            label=paste0('AUC : ',auc$predAUC[i]), 
+            vjust = 1, hjust = 0.5, size = 3) +
+    geom_raster(data = Mpred.xyz, 
+                aes(x=x, y=y, fill=z)) +
+    geom_contour(data = bathy.xy, binwidth = 50, colour = 'black', linewidth = 0.25,
+                 aes(x = x, y = y, z = MORG_sp_ext)) +
+ #   annotate(geom = 'text', label = paste0(sp.codes$code[i]), x = -Inf, y = Inf, 
+  #            hjust = -4.5, vjust = 1.75, size = 5, fill = 'white') +
+    scale_fill_stepsn(colors = palBYR.i, breaks = seq(0,1,by=0.1), limits = c(0,1)) +
+    scale_x_continuous(expand = c(0,0), limits = c(6733105,6735505)) +
+    scale_y_continuous(expand = c(0,0), limits = c(-3962780,-3959055)) +
+    coord_equal() +
+    theme_bw() +
+    labs(fill = 'Prob.') +
+#    lims(x = c(6733105,6735505), y = c(-3962780,-3959055)) +
+    theme(axis.title = element_blank(),
+          axis.text = element_blank(),
+          axis.ticks = element_blank(),
+          panel.grid = element_blank(), 
+          legend.position = c(0.8,0.22),
+          legend.background = element_rect(size = 0.5, colour = 'gray', fill = 'white'),
+          legend.text = element_text(size = 7.5),
+          legend.title = element_text(size = 9),
+          legend.key.width = unit(0.5, 'cm'),
+          legend.key.height = unit(0.5, 'cm'),
+          panel.border = element_rect(size = 1.5, colour = 'black', fill = NA))
+  b <- ggplot() +
+    annotate('text',x=max(Mpred.xyz$x),y=max(Mpred.xyz$y),label=paste0(sp.codes$code[i]), 
+             vjust = 1, hjust = 0.25) +
+    annotate('text',x=max(Mpred.xyz$x),y=max(Mpred.xyz$y-200),
+             label= paste0('n = ',sum(sp.occ.i[,1])),
+             vjust = 1, hjust = 0.25, size = 3) +
+    geom_raster(data = SDpred.xyz, 
+                aes(x=x, y=y, fill=z)) +
+    geom_contour(data = bathy.xy, binwidth = 50, colour = 'black', linewidth = 0.25,
+                 aes(x = x, y = y, z = MORG_sp_ext)) +
+    geom_point(data = sp.occ.i, color = 'orange', alpha = 0.5, 
+               size = 0.75, fill = 'darkorange',
+               aes(x = X, y = Y)) +
+    scale_fill_stepsn(colors = palCB.i, n.breaks = 10, limits = c(0,0.5)) +
+    scale_x_continuous(expand = c(0,0), limits = c(6733105,6735505)) +
+    scale_y_continuous(expand = c(0,0), limits = c(-3962780,-3959055)) +
+    coord_equal() +
+    theme_bw() +
+    labs(fill = 'SD Prob.') +
+  #  lims(x = c(6733105,6735505), y = c(-3962780,-3959055)) +
+    theme(axis.title = element_blank(),
+          axis.text = element_blank(),
+          axis.ticks = element_blank(),
+          panel.grid = element_blank(), 
+          legend.position = c(0.82,0.22),
+          legend.background = element_rect(size = 0.5, colour = 'gray', fill = 'white'),
+          legend.text = element_text(size = 7.5),
+          legend.title = element_text(size = 9),
+          legend.key.width = unit(0.5, 'cm'),
+          legend.key.height = unit(0.5, 'cm'),
+          panel.border = element_rect(size = 1.5, colour = 'black', fill = NA))
+
+  c <- ggplot() +
+     annotate('text',x=max(Mpred.xyz$x),y=max(Mpred.xyz$y),
+              label=paste0('R2 : ',r2$predR2[i]), 
+             vjust = 1, hjust = 0.5, size = 3) +
+    geom_raster(data = Mpred.xyz2, 
+                aes(x=x, y=y, fill=z)) + #change if want to use normal scale
+    geom_contour(data = bathy.xy, binwidth = 50, colour = 'black', linewidth = 0.25,
+                 aes(x = x, y = y, z = MORG_sp_ext)) +
+  #  scale_fill_stepsn(colors = palBYR.i, limits = c(-0.5,4.5), n.breaks = 10) +
+      scale_fill_stepsn(colors = palBYR.i, breaks = brk,
+                    limits = c(0,x95), show.limits = FALSE,
+                    labels = brk.labs) +
+    scale_x_continuous(expand = c(0,0), limits = c(6733105,6735505)) +
+    scale_y_continuous(expand = c(0,0), limits = c(-3962780,-3959055)) +
+    coord_equal() +
+    theme_bw() +
+    labs(fill = 'Dens.') +
+   # lims(x = c(6733105,6735505), y = c(-3962780,-3959055)) +
+    theme(axis.title = element_blank(),
+          axis.text = element_blank(),
+          axis.ticks = element_blank(),
+          panel.grid = element_blank(), 
+          legend.position = c(0.82,0.22),
+          legend.background = element_rect(size = 0.5, colour = 'gray', fill = 'white'),
+          legend.title = element_blank(),
+          legend.text = element_text(size = 7.5),
+          #legend.title = element_text(size = 9),
+          legend.key.width = unit(0.5, 'cm'),
+          legend.key.height = unit(0.5, 'cm'),
+          panel.border = element_rect(size = 1.5, colour = 'black', fill = NA))
+  d <- ggplot() +
+    geom_raster(data = SDpred.xyz2, 
+                aes(x=x, y=y, fill=z)) +
+    geom_contour(data = bathy.xy, binwidth = 50, colour = 'black', linewidth = 0.25,
+                 aes(x = x, y = y, z = MORG_sp_ext)) +
+    scale_fill_stepsn(colors = palCB.i, n.breaks = 10, limits = c(0,0.5)) +
+    scale_x_continuous(expand = c(0,0), limits = c(6733105,6735505)) +
+    scale_y_continuous(expand = c(0,0), limits = c(-3962780,-3959055)) +
+    coord_equal() +
+    theme_bw() +
+    labs(fill = 'SD Dens.') +
+  #  lims(x = c(6733105,6735505), y = c(-3962780,-3959055)) +
+    theme(axis.title = element_blank(),
+          axis.text = element_blank(),
+          axis.ticks = element_blank(),
+          panel.grid = element_blank(), 
+          legend.position = c(0.8,0.22),
+          legend.background = element_rect(size = 0.5, colour = 'gray', fill = 'white'),
+          legend.text = element_text(size = 7.5),
+          legend.title = element_text(size = 9),
+          legend.key.width = unit(0.5, 'cm'),
+          legend.key.height = unit(0.5, 'cm'),
+          panel.border = element_rect(size = 1.5, colour = 'black', fill = NA))
+
+  e <- ggarrange(a,b,c,d, labels = c('A','B','C',"D"), 
+                 label.x = 0.075, label.y = 0.97)
+  print(e)
+}
+
+dev.off()
+```
+
+
+
+Try plotting with gradient color scale.
+```{r,fig.height=7.5,fig.width=5.2}
+# set filename for pdf to save to
+filename =  paste("Figures/Distribution_maps_all_btGr.pdf")
+pdf(file = filename, height = 7.5, width = 5, compress = FALSE)
+
+for (i in 1:length(sp)){
+  MpredY <- apply(a.PA[,i,], 1, mean) # calculate average occurrence probability
+  SDpredY <- apply(a.PA[,i,], 1, sd) # calculate SD in occurrence probability (uncertainty)
+  
+  MpredY2 <- apply(a.A[,i,], 1, mean) # calculate average log abundance
+  MpredY2 <- exp(MpredY2) #back transform
+  MpredY2 <- MpredY*MpredY2 #hurdle predictions
+ 
+  SDpredY2 <- apply(a.A[,i,], 1, sd) # calculate SD in log abun (uncertainty)
+  SDpredY2 <- SDpredY*SDpredY2 #hurdle SD
+  
+ 
+   # convert arrays to dataframes and add the plot data
+  Mpred.xyz <- data.frame(x =xy[,1], y =xy[,2], z = MpredY)
+  SDpred.xyz <- data.frame(x =xy[,1], y =xy[,2],z = SDpredY)
+  Mpred.xyz2 <- data.frame(x =xy[,1], y =xy[,2], z = MpredY2)
+  SDpred.xyz2 <- data.frame(x =xy[,1], y =xy[,2],z = SDpredY2)
+  
+  # calculate abundance limits
+#  binw <- max(Mpred.xyz2$z)/10
+ # lims <- c(min(Mpred.xyz2$z), max(Mpred.xyz2$z))
+#  brk <- seq(lims[1],lims[2],by=binw)
+ # brk.labs <- round(brk, digits =2)
+  
+  # make occurrence df
+  sp.occ.i <- sp.occ.df[,c(i,38,39)]
+  sp.occ.i <- na.omit(sp.occ.i) 
+
+  # plot
+  a <- ggplot() +
+    annotate('text',x=max(Mpred.xyz$x),y=max(Mpred.xyz$y),
+            label=paste0('AUC : ',auc$predAUC[i]), 
+            vjust = 1, hjust = 0.5, size = 3) +
+    geom_raster(data = Mpred.xyz, 
+                aes(x=x, y=y, fill=MpredY)) +
+    geom_contour(data = bathy.xy, binwidth = 50, colour = 'black', linewidth = 0.25,
+                 aes(x = x, y = y, z = Band_1)) +
+ #   annotate(geom = 'text', label = paste0(sp.codes$code[i]), x = -Inf, y = Inf, 
+  #            hjust = -4.5, vjust = 1.75, size = 5, fill = 'white') +
+    #scale_fill_stepsn(colors = palD.i, breaks = seq(0,1,by=0.1), limits = c(0,1)) +
+    scale_fill_gradient2(low = palD.i[1], mid = palD.i[5], high = palD.i[10],
+                         midpoint = max(Mpred.xyz$z)/2,
+                         guide = 'colourbar', limits = c(0,1)) +
+    scale_x_continuous(expand = c(0,0), limits = c(6733105,6735505)) +
+    scale_y_continuous(expand = c(0,0), limits = c(-3962780,-3959055)) +
+    coord_equal() +
+    theme_bw() +
+    labs(fill = 'Mean HSI') +
+#    lims(x = c(6733105,6735505), y = c(-3962780,-3959055)) +
+    theme(axis.title = element_blank(),
+          axis.text = element_blank(),
+          axis.ticks = element_blank(),
+          panel.grid = element_blank(), 
+          legend.position = c(0.8,0.22),
+          legend.background = element_rect(size = 0.5, colour = 'gray', fill = 'white'),
+          legend.text = element_text(size = 7.5),
+          legend.title = element_text(size = 9),
+          legend.key.width = unit(0.5, 'cm'),
+          legend.key.height = unit(0.5, 'cm'),
+          panel.border = element_rect(size = 1.5, colour = 'black', fill = NA))
+  b <- ggplot() +
+    annotate('text',x=max(Mpred.xyz$x),y=max(Mpred.xyz$y),label=paste0(sp.codes$code[i]), 
+             vjust = 1, hjust = 0.25) +
+    annotate('text',x=max(Mpred.xyz$x),y=max(Mpred.xyz$y-200),
+             label= paste0('n = ',sum(sp.occ.i[,1])),
+             vjust = 1, hjust = 0.25, size = 3) +
+    geom_raster(data = SDpred.xyz, 
+                aes(x=x, y=y, fill=SDpredY)) +
+    geom_contour(data = bathy.xy, binwidth = 50, colour = 'black', linewidth = 0.25,
+                 aes(x = x, y = y, z = Band_1)) +
+    geom_point(data = sp.occ.i, color = 'darkred', alpha = 0.5, 
+               size = 0.75, fill = 'darkred',
+               aes(x = X, y = Y)) +
+  #  scale_fill_stepsn(colors = palCB.i, n.breaks = 10, limits = c(0,2)) +
+     scale_fill_gradient2(low = palCB.i[1], mid = palCB.i[5], high = palCB.i[10],
+                         midpoint = 0.5,
+                         guide = 'colourbar', limits = c(0,0.5)) +
+    scale_x_continuous(expand = c(0,0), limits = c(6733105,6735505)) +
+    scale_y_continuous(expand = c(0,0), limits = c(-3962780,-3959055)) +
+    coord_equal() +
+    theme_bw() +
+    labs(fill = 'SD HSI') +
+  #  lims(x = c(6733105,6735505), y = c(-3962780,-3959055)) +
+    theme(axis.title = element_blank(),
+          axis.text = element_blank(),
+          axis.ticks = element_blank(),
+          panel.grid = element_blank(), 
+          legend.position = c(0.82,0.22),
+          legend.background = element_rect(size = 0.5, colour = 'gray', fill = 'white'),
+          legend.text = element_text(size = 7.5),
+          legend.title = element_text(size = 9),
+          legend.key.width = unit(0.5, 'cm'),
+          legend.key.height = unit(0.5, 'cm'),
+          panel.border = element_rect(size = 1.5, colour = 'black', fill = NA))
+
+  c <- ggplot() +
+     annotate('text',x=max(Mpred.xyz$x),y=max(Mpred.xyz$y),
+              label=paste0('R2 : ',r2$predR2[i]), 
+             vjust = 1, hjust = 0.5, size = 3) +
+    geom_raster(data = Mpred.xyz2, 
+                aes(x=x, y=y, fill=MpredY2)) +
+    geom_contour(data = bathy.xy, binwidth = 50, colour = 'black', linewidth = 0.25,
+                 aes(x = x, y = y, z = Band_1)) +
+    scale_fill_gradient2(low = palCG.i[1], mid = palCG.i[5], high = palCG.i[10],
+                         midpoint = 5, guide = 'colourbar', limits = c(0,10),na.value = palCG.i[10]) +
+                     #    oob = scales::squish(x = X, range = c(0,10))) +
+  #  scale_fill_stepsn(colors = palCG.i, limits = c(0,5), n.breaks = 10) +
+    scale_x_continuous(expand = c(0,0), limits = c(6733105,6735505)) +
+    scale_y_continuous(expand = c(0,0), limits = c(-3962780,-3959055)) +
+    coord_equal() +
+    theme_bw() +
+    labs(fill = "Dens.") +
+   # lims(x = c(6733105,6735505), y = c(-3962780,-3959055)) +
+    theme(axis.title = element_blank(),
+          axis.text = element_blank(),
+          axis.ticks = element_blank(),
+          panel.grid = element_blank(), 
+          legend.position = c(0.82,0.22),
+          legend.background = element_rect(size = 0.5, colour = 'gray', fill = 'white'),
+          legend.text = element_text(size = 7.5),
+          legend.title = element_text(size = 9),
+          legend.key.width = unit(0.5, 'cm'),
+          legend.key.height = unit(0.5, 'cm'),
+          panel.border = element_rect(size = 1.5, colour = 'black', fill = NA))
+  d <- ggplot() +
+    geom_raster(data = SDpred.xyz2, 
+                aes(x=x, y=y, fill=SDpredY2)) +
+    geom_contour(data = bathy.xy, binwidth = 50, colour = 'black', linewidth = 0.25,
+                 aes(x = x, y = y, z = Band_1)) +
+  #  scale_fill_stepsn(colors = palCB.i, n.breaks = 10, limits = c(0,2)) +
+    scale_fill_gradient2(low = palCB.i[1], mid = palCB.i[5], high = palCB.i[10],
+                         midpoint = 0.5,
+                         guide = 'colourbar', limits = c(0,0.5)) +
+    scale_x_continuous(expand = c(0,0), limits = c(6733105,6735505)) +
+    scale_y_continuous(expand = c(0,0), limits = c(-3962780,-3959055)) +
+    coord_equal() +
+    theme_bw() +
+    labs(fill = 'SD Dens.') +
+  #  lims(x = c(6733105,6735505), y = c(-3962780,-3959055)) +
+    theme(axis.title = element_blank(),
+          axis.text = element_blank(),
+          axis.ticks = element_blank(),
+          panel.grid = element_blank(), 
+          legend.position = c(0.8,0.22),
+          legend.background = element_rect(size = 0.5, colour = 'gray', fill = 'white'),
+          legend.text = element_text(size = 7.5),
+          legend.title = element_text(size = 9),
+          legend.key.width = unit(0.5, 'cm'),
+          legend.key.height = unit(0.5, 'cm'),
+          panel.border = element_rect(size = 1.5, colour = 'black', fill = NA))
+
+  e <- ggarrange(a,b,c,d, labels = c('A','B','C',"D"), 
+                 label.x = 0.075, label.y = 0.97)
+  print(e)
+ 
+}
+
+dev.off()
+```
+
+
+Save each plot separately as a PNG for easy embedding in the chapter text.
+```{r,warning=FALSE}
+# make empty list to store plots
+plot_list = list()
+
+# save each plot to list
+for (i in 1:length(sp)){
+MpredY <- apply(a.PA[,i,], 1, mean) # calculate average occurrence probability
+  SDpredY <- apply(a.PA[,i,], 1, sd) # calculate SD in occurrence probability (uncertainty)
+  
+  MpredY2 <- apply(a.A[,i,], 1, mean) # calculate average log abundance
+  MpredY2 <- exp(MpredY2) #back transform
+  MpredY2 <- MpredY*MpredY2 #hurdle predictions
+  
+  SDpredY2 <- apply(a.A[,i,], 1, sd) # calculate SD in log abun (uncertainty)
+  SDpredY2 <- exp(SDpredY2) #back transform
+  SDpredY2 <- SDpredY*SDpredY2 #hurdle SD
+  
+ 
+   # convert arrays to dataframes and add the plot data
+  Mpred.xyz <- data.frame(x =xy[,1], y =xy[,2], z = MpredY)
+  SDpred.xyz <- data.frame(x =xy[,1], y =xy[,2],z = SDpredY)
+  Mpred.xyz2 <- data.frame(x =xy[,1], y =xy[,2], z = MpredY2)
+  SDpred.xyz2 <- data.frame(x =xy[,1], y =xy[,2],z = SDpredY2)
+  
+  # calculate abundance limits
+#  binw <- max(Mpred.xyz2$z)/10
+ # lims <- c(min(Mpred.xyz2$z), max(Mpred.xyz2$z))
+#  brk <- seq(lims[1],lims[2],by=binw)
+ # brk.labs <- round(brk, digits =2)
+  
+  # make occurrence df
+  sp.occ.i <- sp.occ.df[,c(i,38,39)]
+  sp.occ.i <- na.omit(sp.occ.i)
+  
+  # plot
+  a <- ggplot() +
+    annotate('text',x=max(Mpred.xyz$x),y=max(Mpred.xyz$y),
+            label=paste0('AUC : ',auc$predAUC[i]), 
+            vjust = 1, hjust = 0.5, size = 3) +
+    geom_raster(data = Mpred.xyz, 
+                aes(x=x, y=y, fill=MpredY)) +
+    geom_contour(data = bathy.xy, binwidth = 50, colour = 'black', linewidth = 0.25,
+                 aes(x = x, y = y, z = MORG_sp_ext)) +
+ #   annotate(geom = 'text', label = paste0(sp.codes$code[i]), x = -Inf, y = Inf, 
+  #            hjust = -4.5, vjust = 1.75, size = 5, fill = 'white') +
+    scale_fill_stepsn(colors = palBYR.i, breaks = seq(0,1,by=0.1), limits = c(0,1)) +
+    scale_x_continuous(expand = c(0,0), limits = c(6733105,6735505)) +
+    scale_y_continuous(expand = c(0,0), limits = c(-3962780,-3959055)) +
+    coord_equal() +
+    theme_bw() +
+    labs(fill = 'Prob.') +
+#    lims(x = c(6733105,6735505), y = c(-3962780,-3959055)) +
+    theme(axis.title = element_blank(),
+          axis.text = element_blank(),
+          axis.ticks = element_blank(),
+          panel.grid = element_blank(), 
+          legend.position = c(0.8,0.22),
+          legend.background = element_rect(size = 0.5, colour = 'gray', fill = 'white'),
+          legend.text = element_text(size = 7.5),
+          legend.title = element_text(size = 9),
+          legend.key.width = unit(0.5, 'cm'),
+          legend.key.height = unit(0.5, 'cm'),
+          panel.border = element_rect(size = 1.5, colour = 'black', fill = NA))
+  b <- ggplot() +
+    annotate('text',x=max(Mpred.xyz$x),y=max(Mpred.xyz$y),label=paste0(sp.codes$code[i]), 
+             vjust = 1, hjust = 0.25) +
+    annotate('text',x=max(Mpred.xyz$x),y=max(Mpred.xyz$y-200),
+             label= paste0('n = ',sum(sp.occ.i[,1])),
+             vjust = 1, hjust = 0.25, size = 3) +
+    geom_raster(data = SDpred.xyz, 
+                aes(x=x, y=y, fill=SDpredY)) +
+    geom_contour(data = bathy.xy, binwidth = 50, colour = 'black', linewidth = 0.25,
+                 aes(x = x, y = y, z = MORG_sp_ext)) +
+    geom_point(data = sp.occ.i, color = 'orange', alpha = 0.5, 
+               size = 0.75, fill = 'darkorange',
+               aes(x = X, y = Y)) +
+    scale_fill_stepsn(colors = palCB.i, n.breaks = 10, limits = c(0,0.5)) +
+    scale_x_continuous(expand = c(0,0), limits = c(6733105,6735505)) +
+    scale_y_continuous(expand = c(0,0), limits = c(-3962780,-3959055)) +
+    coord_equal() +
+    theme_bw() +
+    labs(fill = 'SD Prob.') +
+  #  lims(x = c(6733105,6735505), y = c(-3962780,-3959055)) +
+    theme(axis.title = element_blank(),
+          axis.text = element_blank(),
+          axis.ticks = element_blank(),
+          panel.grid = element_blank(), 
+          legend.position = c(0.82,0.22),
+          legend.background = element_rect(size = 0.5, colour = 'gray', fill = 'white'),
+          legend.text = element_text(size = 7.5),
+          legend.title = element_text(size = 9),
+          legend.key.width = unit(0.5, 'cm'),
+          legend.key.height = unit(0.5, 'cm'),
+          panel.border = element_rect(size = 1.5, colour = 'black', fill = NA))
+
+  c <- ggplot() +
+     annotate('text',x=max(Mpred.xyz$x),y=max(Mpred.xyz$y),
+              label=paste0('R2 : ',r2$predR2[i]), 
+             vjust = 1, hjust = 0.5, size = 3) +
+    geom_raster(data = Mpred.xyz2, 
+                aes(x=x, y=y, fill=log(MpredY2))) + #change if want to use normal scale
+    geom_contour(data = bathy.xy, binwidth = 50, colour = 'black', linewidth = 0.25,
+                 aes(x = x, y = y, z = MORG_sp_ext)) +
+    scale_fill_stepsn(colors = palBYR.i, limits = c(-0.5,4.5), n.breaks = 10) +
+    scale_x_continuous(expand = c(0,0), limits = c(6733105,6735505)) +
+    scale_y_continuous(expand = c(0,0), limits = c(-3962780,-3959055)) +
+    coord_equal() +
+    theme_bw() +
+    labs(fill = 'Abun.') +
+   # lims(x = c(6733105,6735505), y = c(-3962780,-3959055)) +
+    theme(axis.title = element_blank(),
+          axis.text = element_blank(),
+          axis.ticks = element_blank(),
+          panel.grid = element_blank(), 
+          legend.position = c(0.82,0.22),
+          legend.background = element_rect(size = 0.5, colour = 'gray', fill = 'white'),
+          legend.text = element_text(size = 7.5),
+          legend.title = element_text(size = 9),
+          legend.key.width = unit(0.5, 'cm'),
+          legend.key.height = unit(0.5, 'cm'),
+          panel.border = element_rect(size = 1.5, colour = 'black', fill = NA))
+  d <- ggplot() +
+    geom_raster(data = SDpred.xyz2, 
+                aes(x=x, y=y, fill=SDpredY2)) +
+    geom_contour(data = bathy.xy, binwidth = 50, colour = 'black', linewidth = 0.25,
+                 aes(x = x, y = y, z = MORG_sp_ext)) +
+    scale_fill_stepsn(colors = palCB.i, n.breaks = 10, limits = c(0,0.5)) +
+    scale_x_continuous(expand = c(0,0), limits = c(6733105,6735505)) +
+    scale_y_continuous(expand = c(0,0), limits = c(-3962780,-3959055)) +
+    coord_equal() +
+    theme_bw() +
+    labs(fill = 'SD Log(Ab.)') +
+  #  lims(x = c(6733105,6735505), y = c(-3962780,-3959055)) +
+    theme(axis.title = element_blank(),
+          axis.text = element_blank(),
+          axis.ticks = element_blank(),
+          panel.grid = element_blank(), 
+          legend.position = c(0.8,0.22),
+          legend.background = element_rect(size = 0.5, colour = 'gray', fill = 'white'),
+          legend.text = element_text(size = 7.5),
+          legend.title = element_text(size = 9),
+          legend.key.width = unit(0.5, 'cm'),
+          legend.key.height = unit(0.5, 'cm'),
+          panel.border = element_rect(size = 1.5, colour = 'black', fill = NA))
+
+  e <- ggarrange(a,b,c,d, labels = c('A','B','C',"D"), 
+                 label.x = 0.075, label.y = 0.97)
+  plot_list[[i]] = e
+}
+
+# save plots to png (make separate file for each plot)
+for (i in 1:length(sp)){
+  file_name = paste0('Figures/predicted distribution maps/',sp[i],'_2020-fished.png')
+  png(file_name, res = 500, height = 7.5, width = 5, units = 'in')
+  print(plot_list[[i]])
+  dev.off()
+}
+
+rm(a.A, a.PA, plot_list)
+```
+
+Map CWM 
+```{r}
+
+```

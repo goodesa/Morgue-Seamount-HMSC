@@ -1,0 +1,216 @@
+---
+title: "Joint-species distribution modelling with Hmsc (S3)"
+output:
+  pdf_document: default
+  html_notebook: default
+---
+
+This script is a template to guide the application of joint species distribution modelling (jSDM) using the package Hmsc. This code is based primarily off the scripts provided in the book *Joint Species Distribution Modelling: With Applications in R* by Nerea Abrego and Otso Ovaskainen and by Dr. Fabrice Stephenson (University of Waikato).
+
+The primary purpose here is to predict the past, present, and future distributions of epi-megabenthic taxa on a New Zealand seamount as they relate to previous bottom trawl fishing impacts. The main data utilised here was derived from seafloor images collected by National Institute of Water and Atmospheric Research (NIWA) researchers using a towed camera five times between 2001 and 2020. These images were analysed by myself, Savannah Goode (VUW/NIWA), to collect species counts for use in jSDM. Commercial fisheries data was supplied by Ministry for Primary Industries and analysed by Dr. Malcolm Clark (NIWA) and myself to estimate the fine-scale fishing footprint within the study area. Multibeam data was collected and processed by Arne Pallentin.
+
+The script is separated into five steps (with this being the third):
+
+1. Setting model structure and fitting the model.
+
+2. Examining MCMC convergence.
+
+3. **Evaluating model fit and comparing models.**
+
+4. Exploring parameter estimates.
+
+5. Making predictions.
+
+***
+
+#### **Read in data**
+
+Set the working directory to the location of all the relevant files. Abrego and Ovaskainen also recommend creating the subdirectories 'data' and 'models' within the main directory. If running on a different computer or files moved, the wd parameter will have to be changed to match your file structure.
+```{r "setup", include = TRUE, echo = FALSE}
+library(knitr)
+# change to match computer directory
+opts_knit$set(root.dir = "/Users/savannahgoode/OneDrive - Victoria University of Wellington - STAFF/R/chapter 4")
+#opts_knit$set(root.dir = "C:/Users/goodes/OneDrive - Victoria University of Wellington - STAFF/R/chapter 4")
+opts_chunk$set(echo = FALSE)
+```
+
+```{r}
+# change to match computer directory
+wd = "/Users/savannahgoode/OneDrive - Victoria University of Wellington - STAFF/R/chapter 4"
+#wd = "C:/Users/goodes/OneDrive - Victoria University of Wellington - STAFF/R/chapter 4"
+setwd(wd)
+localDir = "."
+data.directory = file.path(localDir, "Data")
+model.directory = file.path(localDir, "Models")
+getwd()
+```
+
+Load Hmsc library and set seed so results are reproducible.
+```{r message=FALSE}
+library(Hmsc)
+set.seed(3)
+```
+
+Load the fitted models with the highest thin parameters and for which MCMC convergence was achieved.
+```{r}
+nChains = 5
+samples = 200
+thin = 100
+filename=file.path(model.directory,
+                   paste0("model_chains_",as.character(nChains),
+                          "_samples_",as.character(samples),"_thin_",as.character(thin),
+                          ".Rdata",sep=""))
+load(filename)
+
+# make sure the right models were loaded
+nm <- length(models)
+for(i in 1:nm){
+  print(paste0("model = ",modelnames[i]))
+  print(models[[i]])
+}
+```
+
+We can evaluate model fit in terms of explanatory power. The kind of fit measures depend on the type of response variable (Y). For all types of Y, root-mean-square error (RMSE) between predicted and observed values is computed. For normal models, $R^2$ is computed as squared pearson correlation between observed and predicted values, times the sign of the correlation. FOr probit models, Tjur $R^2$ and AUC are also computed. For Poisson models, a pseudo-R2 is computed as squared spearman correlation between observed and predicted values, times the sign of the correlation (SR2). For Poisson models, the observed and predicted data are also truncated to occurrences (presence-absences), for which the same measures are given as for the probit models (O.RMSE, O.AUC, and O.TjurR2). For poisson models, the observed and predicted data are also subsetted to conditional on presence, for which the root-mean-square error and pseudo-$R^2$ based on squared spearman correlation are computed (C.RMSE, C.SR2).
+```{r}
+MF = list()
+
+for(model in 1:nm){
+  m = models[[model]]
+  preds = computePredictedValues(m)
+  MF[[model]] = evaluateModelFit(hM=m, predY=preds)
+}
+
+```
+
+Compare RMSE across models.
+```{r}
+for(model in 1:nm){
+  print(paste0("model = ",modelnames[model]))
+  print(paste0("Mean RMSE = ",signif(mean(MF[[model]]$RMSE)),digits = 3))
+}
+```
+
+We can also evaluate fit in terms of cross-validation to determine the models' predictive power. This can take a lot of time because the model needs to be refitted the number of times corresponding to the folds used. 
+```{r}
+## NOT YET TESTED
+nfolds = 10
+nParallel = 5
+MFCV = list()
+
+filename_out = paste("Models/MFCV_chains_",as.character(nChains),
+                          "_samples_",as.character(samples),"_thin_",as.character(thin),
+                          ".Rdata",sep="")
+```
+
+
+```{r}
+#run.cross.validation = TRUE
+#if(run.cross.validation){
+  
+  for(model in 1:nm){
+  print(paste0("model = ",as.character(model)))
+  start <- Sys.time()
+  m = models[[model]]
+  partition = createPartition(m, nfolds = nfolds)
+  preds = computePredictedValues(m,partition=partition, nParallel = nParallel)
+  MFCV[[model]] = evaluateModelFit(hM=m, predY=preds)
+  end <- Sys.time()
+  print(end - start)
+}
+  
+#} else {
+  #load(filename_out)
+  #}
+```
+
+
+```{r}
+save(MF,MFCV,modelnames,file = filename_out)
+```
+
+Plot predictive power as a function of explanatory power to evaluate the model fits. Based on advice from Fabrice Stephenson, I will use AUC to evaluate the presence-absence model and $R^2$ to evaluate the abundance model.
+```{r, fig.height=6,fig.width=6}
+# presence-absence
+plot(MF[[1]]$AUC, MFCV[[1]]$AUC, xlim = c(0,1), ylim = c(0,1), 
+     xlab = 'explanatory power', ylab = 'predictive power', 
+     main = paste0(modelnames[1],", thin = ",as.character(thin),", samples = ",as.character(samples),": AUC"))
+abline(0,1)
+abline(h = 0.5)
+abline(v = 0.5)
+# abundance
+plot(MF[[2]]$R2, MFCV[[2]]$R2, xlim = c(-1,1), ylim = c(-1,1),
+     xlab = 'explanatory power', ylab = 'predictive power',
+     main = paste0(modelnames[2],", thin = ",as.character(thin),", samples = ",as.character(samples),": R2"))
+abline(0,1)
+abline(h = 0)
+abline(v = 0)
+```
+
+
+Save plots and species-specific explanatory/predictive power to files.
+```{r echo=TRUE}
+nm = length(MF)
+filename = paste("Figures/model_fit.pdf")
+pdf(file = filename)
+
+sp.code <- m[["spNames"]]
+
+excel.list <- list()
+
+for(j in 1:nm){
+  cMF = MF[[j]]
+  cMFCV = MFCV[[j]]
+  if(!is.null(cMF$TjurR2)){
+    plot(cMF$TjurR2,cMFCV$TjurR2,xlim=c(-1,1),ylim=c(-1,1),
+         xlab = "explanatory power",
+         ylab = "predictive power",
+         main=paste0(modelnames[[j]],", thin = ",as.character(thin),", samples = ",as.character(samples),": Tjur R2"))
+    abline(0,1)
+    abline(v=0)
+    abline(h=0)
+    
+    # create excel file for reference
+    me <- data.frame(cbind(cMF$TjurR2,cMFCV$TjurR2))
+    me <- data.frame(cbind(sp.code,me))
+    colnames(me) <- c("Taxa","TjurR2: Explanatory ", "TjurR2: Predictive")
+    excel.list <- c(excel.list, "TjurR2" = list(me))
+  }
+  if(!is.null(cMF$R2)){
+    plot(cMF$R2,cMFCV$R2,xlim=c(-1,1),ylim=c(-1,1),
+         xlab = "explanatory power",
+         ylab = "predictive power",
+         main=paste0(modelnames[[j]],", thin = ",as.character(thin),", samples = ",as.character(samples),": R2"))
+    abline(0,1)
+    abline(v=0)
+    abline(h=0)
+    
+    # create excel file for reference
+    me <- data.frame(cbind(cMF$R2,cMFCV$R2))
+    me <- data.frame(cbind(sp.code,me))
+    colnames(me) <- c("Taxa","R2: Explanatory ", "R2: Predictive")
+    rownames(me) <- sp.code
+    excel.list <- c(excel.list, "R2" = list(me))
+  }
+  if(!is.null(cMF$AUC)){
+    plot(cMF$AUC,cMFCV$AUC,xlim=c(0,1),ylim=c(0,1),
+         xlab = "explanatory power",
+         ylab = "predictive power",
+         main=paste0(modelnames[[j]],", thin = ",as.character(thin),", samples = ",as.character(samples),": AUC"))
+    abline(0,1)
+    abline(v=0.5)
+    abline(h=0.5)
+    
+    # create excel file for reference
+    me <- data.frame(cbind(cMF$AUC,cMFCV$AUC))
+    me <- data.frame(cbind(sp.code,me))
+    colnames(me) <- c("Taxa","AUC: Explanatory ", "AUC: Predictive")
+    rownames(me) <- sp.code
+    excel.list <- c(excel.list, "AUC" = list(me))
+  }
+  
+  filename = paste0("figures/cross_val_",modelnames[j],".xlsx")
+  writexl::write_xlsx(excel.list,path = filename)
+}
+dev.off()
+```
+

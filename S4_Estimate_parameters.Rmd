@@ -1,0 +1,427 @@
+---
+title: "Joint-species distribution modelling with Hmsc (S4)"
+output: html_notebook
+---
+This script is a template to guide the application of joint species distribution modelling (jSDM) using the package Hmsc. This code is based primarily off the scripts provided in the book *Joint Species Distribution Modelling: With Applications in R* by Nerea Abrego and Otso Ovaskainen and by Dr. Fabrice Stephenson (University of Waikato).
+
+The primary purpose here is to predict the past, present, and future distributions of epi-megabenthic taxa on a New Zealand seamount as they relate to previous bottom trawl fishing impacts. The main data utilised here was derived from seafloor images collected by National Institute of Water and Atmospheric Research (NIWA) researchers using a towed camera five times between 2001 and 2020. These images were analysed by myself, Savannah Goode (VUW/NIWA), to collect species counts for use in jSDM. Commercial fisheries data was supplied by Ministry for Primary Industries and analysed by Dr. Malcolm Clark (NIWA) and myself to estimate the fine-scale fishing footprint within the study area. Multibeam data was collected and processed by Arne Pallentin.
+
+The script is separated into five steps (with this being the third):
+
+1. Setting model structure and fitting the model.
+
+2. Examining MCMC convergence.
+
+3. Evaluating model fit and comparing models.
+
+4. **Exploring parameter estimates.**
+
+5. Making predictions.
+
+***
+
+#### **Read in data**
+
+Set the working directory to the location of all the relevant files. Abrego and Ovaskainen also recommend creating the subdirectories 'data' and 'models' within the main directory. If running on a different computer or files moved, the wd parameter will have to be changed to match your file structure.
+```{r "setup", include = TRUE, warning=FALSE}
+library(knitr)
+# change to match computer directory
+opts_knit$set(root.dir = "/Users/savannahgoode/OneDrive - Victoria University of Wellington - STAFF/R/chapter 4")
+#opts_knit$set(root.dir = "C:/Users/goodes/OneDrive - Victoria University of Wellington - STAFF/R/chapter 4")
+opts_chunk$set(echo = FALSE)
+```
+
+```{r, echo = TRUE}
+# change to match computer directory
+wd = "/Users/savannahgoode/OneDrive - Victoria University of Wellington - STAFF/R/chapter 4"
+#wd = "C:/Users/goodes/OneDrive - Victoria University of Wellington - STAFF/R/chapter 4"
+setwd(wd)
+localDir = "."
+data.directory = file.path(localDir, "Data")
+model.directory = file.path(localDir, "Models")
+getwd()
+```
+
+Load Hmsc library and set seed so results are reproducible.
+```{r message=FALSE, echo = TRUE}
+library(Hmsc)
+set.seed(3)
+```
+
+First read in model objects. Make sure to load the *fitted* models with the highest thin values to get the most reliable results.
+```{r}
+# set parameters to load model
+# change these if needed
+nChains = 5
+samples = 200
+thin = 100
+filename=file.path(model.directory,
+                   paste0("model_chains_",as.character(nChains),
+                          "_samples_",as.character(samples),"_thin_",as.character(thin),
+                          ".Rdata",sep=""))
+load(filename)
+
+# make sure the right models were loaded
+nm <- length(models)
+for(i in 1:nm){
+  print(paste0("model = ",modelnames[i]))
+  print(models[[i]])
+}
+```
+***
+
+#### **Explore parameter estimates**
+First examine the explanatory variables in the models.
+```{r, echo = TRUE}
+head(models[[1]]$X)
+```
+
+Perform variance partitioning to visualise the variables explaining each taxon's modelled distribution.
+```{r echo=TRUE}
+library(reshape2)
+library(ggplot2)
+
+nm = length(models)
+
+for(j in 1:nm){
+  m = models[[j]]
+  
+  VP = computeVariancePartitioning(m)
+  vals = VP$vals
+  mycols = rainbow(nrow(VP$vals))
+  vals.m = melt(vals, id.vars = colnames(vals))
+  
+  print(ggplot(vals.m, aes(y = Var2, x = value, fill = Var1)) +
+        geom_bar(stat = "identity", color = "black") +
+        scale_y_discrete(limits = rev)+
+        scale_x_continuous(expand = c(0,0)) +
+        theme(axis.text.x = element_text(size = 8, hjust = 1, vjust = 0.5),
+              axis.ticks = element_blank(),
+              legend.position = 'top') +
+        labs(x = '',y = '',
+             fill="Variable", 
+             title=paste0("Proportion of explained variance: ",modelnames[[j]])))
+  
+  preds = computePredictedValues(m)
+  MF = evaluateModelFit(hM=m, predY=preds)
+  
+  R2 = NULL
+  if(!is.null(MF$AUC)){
+    AUC = MF$AUC
+    vals = rbind(vals,AUC)
+    R2=AUC
+  }
+  if(!is.null(MF$R2)){
+    R2=MF$R2
+    vals = rbind(vals,R2)
+  }
+  
+  if(!is.null(R2)){
+    VPr = VP
+    for(k in 1:m$ns){
+      VPr$vals[,k] = R2[k]*VPr$vals[,k]
+    }
+    
+    VPr$vals = VPr$vals[,order(-R2)]
+    
+    vals.m = melt(VPr$vals, id.vars = colnames(vals))
+    print(ggplot(vals.m, aes(y = Var2, x = value, fill = Var1)) +
+          geom_bar(stat = "identity", color = "black") +
+          scale_y_discrete(limits = rev)+
+          scale_x_continuous(expand = c(0,0)) +
+          theme_bw() +
+          theme(axis.text.x = element_text(size = 8, hjust = 1, vjust = 0.5),
+              axis.ticks = element_blank(),
+              legend.position = 'top') +
+          labs(x = '',y = '',
+             fill="Variable", 
+             title=paste0("Proportion of raw variance: ",modelnames[[j]])))
+  }
+  
+}
+```
+
+
+Save results to csv and pdf.
+```{r, echo = TRUE}
+filename = paste("Figures/parameter_estimates_VP.pdf")
+pdf(file = filename)
+
+for(j in 1:nm){
+  m = models[[j]]
+  
+  VP = computeVariancePartitioning(m)
+  vals = VP$vals
+  mycols = rainbow(nrow(VP$vals))
+  vals.m = melt(vals, id.vars = colnames(vals))
+  print(ggplot(vals.m, aes(y = Var2, x = value, fill = Var1)) +
+        geom_bar(stat = "identity", color = "black") +
+        scale_y_discrete(limits = rev)+
+        scale_x_continuous(expand = c(0,0)) +
+        theme(axis.text.x = element_text(size = 8, hjust = 1, vjust = 0.5),
+              axis.ticks = element_blank(),
+              legend.position = 'top') +
+        labs(x = '',y = '',
+             fill="Variable", 
+             title=paste0("Proportion of explained variance: ",modelnames[[j]])))
+
+  preds = computePredictedValues(m)
+  MF = evaluateModelFit(hM=m, predY=preds)
+  
+  R2 = NULL
+  if(!is.null(MF$AUC)){
+    AUC = MF$AUC
+    vals = rbind(vals,AUC)
+    R2=AUC
+  }
+  if(!is.null(MF$R2)){
+    R2=MF$R2
+    vals = rbind(vals,R2)
+  }
+  
+  filename =  paste0("Figures/parameter_estimates_VP_",modelnames[[j]],".csv")
+  write.csv(vals,file=filename)
+  
+  if(!is.null(R2)){
+    VPr = VP
+    for(k in 1:m$ns){
+      VPr$vals[,k] = R2[k]*VPr$vals[,k]
+    }
+    
+    VPr$vals = VPr$vals[,order(-R2)]
+    
+    vals.m = melt(VPr$vals, id.vars = colnames(vals))
+    print(ggplot(vals.m, aes(y = Var2, x = value, fill = Var1)) +
+          geom_bar(stat = "identity", color = "black") +
+          scale_y_discrete(limits = rev)+
+          scale_x_continuous(expand = c(0,0)) +
+          theme_bw() +
+          theme(axis.text.x = element_text(size = 8, hjust = 1, vjust = 0.5),
+              axis.ticks = element_blank(),
+              legend.position = 'top') +
+          labs(x = '',y = '',
+             fill="Variable", 
+             title=paste0("Proportion of raw variance: ",modelnames[[j]])))
+  }
+  
+}
+```
+
+To show how each taxon is correlated with the environmental variables, we generate a beta-plot. Red indicates positive correlations, and blue indicates negative correlations. 
+
+**IMPORTANT**: make sure to change covariate names to match model.
+```{r message=FALSE, fig.width=7,fig.height=5}
+library(dplyr)
+library(colorspace)
+library(reshape2)
+library(ggplot2)
+
+covNames <- as.vector(models[[1]]$covNames)
+
+for(j in 1:nm){
+  m = models[[j]]
+  postBeta = getPostEstimate(m, parName="Beta")
+  plotBeta(m, post=postBeta,spNamesNumbers=c(TRUE, FALSE), param = "Support", supportLevel = 0.9)
+
+  postBeta.mean = cbind.data.frame(covNames = m$covNames, postBeta$mean)
+  postBeta.supportPos = cbind.data.frame(covNames = m$covNames, postBeta$support)
+  postBeta.supportNeg = cbind.data.frame(covNames = m$covNames, postBeta$supportNeg)
+
+  postBeta.mean = melt(postBeta.mean)
+  colnames(postBeta.mean) = c('covNames','Taxon','Mean')
+
+  postBeta.supportPos = melt(postBeta.supportPos)
+  colnames(postBeta.supportPos) = c('covNames','Taxon','supportPos')
+
+  postBeta.supportNeg = melt(postBeta.supportNeg)
+  colnames(postBeta.supportNeg) = c('covNames','Taxon','supportNeg')
+  postBeta.supportNeg$supportNeg = postBeta.supportNeg$supportNeg*(-1)
+
+  postBeta.vals = merge(postBeta.mean, postBeta.supportPos) 
+  postBeta.vals = merge(postBeta.vals, postBeta.supportNeg)
+
+  postBeta.vals$supportMax <- postBeta.vals[,-c(1:3)][cbind(1:nrow(postBeta.vals),max.col(abs(postBeta.vals[,-c(1:3)])))]
+  
+  postBeta.vals$covNames <- factor(postBeta.vals$covNames,
+                                   levels = covNames)
+
+print(ggplot(data = postBeta.vals, aes(x = covNames, y = Taxon, fill = supportMax)) +
+  geom_tile() +
+  geom_text(aes(label=round(supportMax,digits=2)), size = 2) +
+  scale_y_discrete(limits = rev) +
+  scale_fill_stepsn(colors = c('#008080','#b4c8a8',
+                               '#f6edbd','#edbb8a','#ca562c'), 
+                    breaks = c(-1,-0.95,-0.9,0.9,0.95,1), 
+                 #   breaks = c(-1,-0.85,-0.75,0.75,0.85,1), 
+                    limits = c(-1,1)) +
+  labs(x = '', y = '', fill = 'Posterior support',
+       title = paste0("Beta plot ",modelnames[[j]])) +
+  theme_bw() +
+  theme(axis.ticks = element_blank(),
+        axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1)))
+}
+
+```
+Save beta plots to CSV and PDF.
+```{r}
+for(j in 1:nm){
+  me = as.data.frame(t(postBeta$mean))
+  me = cbind(m$spNames,me)
+  colnames(me) = c("Species",m$covNames)
+  po = as.data.frame(t(postBeta$support))
+  po = cbind(m$spNames,po)
+  colnames(po) = c("Species",m$covNames)
+  ne = as.data.frame(t(postBeta$supportNeg))
+  ne = cbind(m$spNames,ne)
+  colnames(ne) = c("Species",m$covNames)
+  vals = list("Posterior mean"=me,"Pr(x>0)"=po,"Pr(x<0)"=ne)
+  filename = paste0("Figures/parameter_estimates_Beta_",modelnames[j],".xlsx")
+  writexl::write_xlsx(vals,path = filename)
+}
+```
+
+```{r, echo = FALSE, message=FALSE}
+filename = paste("Figures/parameter_estimates_Beta.pdf")
+pdf(file = filename)
+
+for(j in 1:nm){
+  m = models[[j]]
+  postBeta = getPostEstimate(m, parName="Beta")
+
+  postBeta.mean = cbind.data.frame(covNames = m$covNames, postBeta$mean)
+  postBeta.supportPos = cbind.data.frame(covNames = m$covNames, postBeta$support)
+  postBeta.supportNeg = cbind.data.frame(covNames = m$covNames, postBeta$supportNeg)
+
+  postBeta.mean = melt(postBeta.mean)
+  colnames(postBeta.mean) = c('covNames','Taxon','Mean')
+
+  postBeta.supportPos = melt(postBeta.supportPos)
+  colnames(postBeta.supportPos) = c('covNames','Taxon','supportPos')
+
+  postBeta.supportNeg = melt(postBeta.supportNeg)
+  colnames(postBeta.supportNeg) = c('covNames','Taxon','supportNeg')
+  postBeta.supportNeg$supportNeg = postBeta.supportNeg$supportNeg*(-1)
+
+  postBeta.vals = merge(postBeta.mean, postBeta.supportPos) 
+  postBeta.vals = merge(postBeta.vals, postBeta.supportNeg)
+
+  postBeta.vals$supportMax <- postBeta.vals[,-c(1:3)][cbind(1:nrow(postBeta.vals),max.col(abs(postBeta.vals[,-c(1:3)])))]
+  
+  postBeta.vals$covNames <- factor(postBeta.vals$covNames,
+                                   levels = covNames)
+
+print(ggplot(data = postBeta.vals, aes(x = covNames, y = Taxon, fill = supportMax)) +
+  geom_tile() +
+  geom_text(aes(label=round(supportMax,digits=2)), size = 2) +
+  scale_y_discrete(limits = rev) +
+  scale_fill_stepsn(colors = c('#008080','#b4c8a8',
+                               '#f6edbd','#edbb8a','#ca562c'), 
+                    breaks = c(-1,-0.85,-0.75,0.75,0.85,1), 
+                    limits = c(-1,1)) +
+  labs(x = '', y = '', fill = 'Posterior support',
+       title = paste0("Beta plot ",modelnames[[j]])) +
+  theme_bw() +
+  theme(axis.ticks = element_blank(),
+        axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1)))
+}
+```
+
+Next we can use Gamma plots to examine how well the traits are linked to each taxon's niche.
+```{r message=FALSE}
+for(j in 1:nm){
+  m = models[[j]]
+  postGamma = getPostEstimate(m, parName="Gamma")
+
+  postGamma.mean = cbind.data.frame(covNames = m$covNames, postGamma$mean)
+  postGamma.supportPos = cbind.data.frame(covNames = m$covNames, postGamma$support)
+  postGamma.supportNeg = cbind.data.frame(covNames = m$covNames, postGamma$supportNeg)
+
+  postGamma.mean = melt(postGamma.mean)
+  colnames(postGamma.mean) = c('covNames','Trait','Mean')
+
+  postGamma.supportPos = melt(postGamma.supportPos)
+  colnames(postGamma.supportPos) = c('covNames','Trait','supportPos')
+
+  postGamma.supportNeg = melt(postGamma.supportNeg)
+  colnames(postGamma.supportNeg) = c('covNames','Trait','supportNeg')
+  postGamma.supportNeg$supportNeg = postGamma.supportNeg$supportNeg*(-1)
+
+  postGamma.vals = merge(postGamma.mean, postGamma.supportPos) 
+  postGamma.vals = merge(postGamma.vals, postGamma.supportNeg)
+
+  postGamma.vals$supportMax <- postGamma.vals[,-c(1:3)][cbind(1:nrow(postGamma.vals),max.col(abs(postGamma.vals[,-c(1:3)])))]
+  
+  postGamma.vals$covNames <- factor(postGamma.vals$covNames,
+                                   levels = covNames)
+
+print(ggplot(data = postGamma.vals, aes(x = covNames, y = Trait, fill = supportMax)) +
+  geom_tile() +
+  geom_text(aes(label=round(supportMax,digits=2)), size = 2) +
+  scale_y_discrete(labels = m$trNames) +
+  scale_fill_stepsn(colors = c('#008080','#b4c8a8',
+                               '#f6edbd','#edbb8a','#ca562c'), 
+                    breaks = c(-1,-0.85,-0.75,0.75,0.85,1), 
+                    limits = c(-1,1)) +
+  labs(x = '', y = '', fill = 'Posterior support',
+       title = paste0("Gamma plot ",modelnames[[j]])) +
+  theme_bw() +
+  theme(axis.ticks = element_blank(),
+        axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1)))
+}
+```
+Save results to PDF.
+```{r echo=FALSE, message=FALSE}
+filename = paste("Figures/parameter_estimates_Gamma.pdf")
+pdf(file = filename)
+
+for(j in 1:nm){
+  m = models[[j]]
+  postGamma = getPostEstimate(m, parName="Gamma")
+
+  postGamma.mean = cbind.data.frame(covNames = m$covNames, postGamma$mean)
+  postGamma.supportPos = cbind.data.frame(covNames = m$covNames, postGamma$support)
+  postGamma.supportNeg = cbind.data.frame(covNames = m$covNames, postGamma$supportNeg)
+
+  postGamma.mean = melt(postGamma.mean)
+  colnames(postGamma.mean) = c('covNames','Trait','Mean')
+
+  postGamma.supportPos = melt(postGamma.supportPos)
+  colnames(postGamma.supportPos) = c('covNames','Trait','supportPos')
+
+  postGamma.supportNeg = melt(postGamma.supportNeg)
+  colnames(postGamma.supportNeg) = c('covNames','Trait','supportNeg')
+  postGamma.supportNeg$supportNeg = postGamma.supportNeg$supportNeg*(-1)
+
+  postGamma.vals = merge(postGamma.mean, postGamma.supportPos) 
+  postGamma.vals = merge(postGamma.vals, postGamma.supportNeg)
+
+  postGamma.vals$supportMax <- postGamma.vals[,-c(1:3)][cbind(1:nrow(postGamma.vals),max.col(abs(postGamma.vals[,-c(1:3)])))]
+  
+  postGamma.vals$covNames <- factor(postGamma.vals$covNames,
+                                   levels = covNames)
+
+print(ggplot(data = postGamma.vals, aes(x = covNames, y = Trait, fill = supportMax)) +
+  geom_tile() +
+  geom_text(aes(label=round(supportMax,digits=2)), size = 2) +
+  scale_y_discrete(labels = m$trNames) +
+  scale_fill_stepsn(colors = c('#008080','#b4c8a8',
+                               '#f6edbd','#edbb8a','#ca562c'), 
+                    breaks = c(-1,-0.85,-0.75,0.75,0.85,1), 
+                    limits = c(-1,1)) +
+  labs(x = '', y = '', fill = 'Posterior support',
+       title = paste0("Gamma plot ",modelnames[[j]])) +
+  theme_bw() +
+  theme(axis.ticks = element_blank(),
+        axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1)))
+}
+```
+
+```{r}
+library(corrplot)
+m = models[[1]]
+Yabu = m$Y
+Yabu[is.na(Yabu)] <- 0
+mc = cor(Yabu)
+corrplot(mc, method = "color", type = "lower", diag = FALSE)
+```
+

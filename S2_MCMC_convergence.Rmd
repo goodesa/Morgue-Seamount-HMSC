@@ -1,0 +1,119 @@
+---
+title: "Joint-species distribution modelling with Hmsc (S2)"
+output:
+  word_document: default
+  html_notebook: default
+---
+
+This script is a template to guide the application of joint species distribution modelling (jSDM) using the package Hmsc. This code is based primarily off the scripts provided in the book *Joint Species Distribution Modelling: With Applications in R* by Nerea Abrego and Otso Ovaskainen and by Dr. Fabrice Stephenson (University of Waikato).
+
+The primary purpose here is to predict the past, present, and future distributions of epi-megabenthic taxa on a New Zealand seamount as they relate to previous bottom trawl fishing impacts. The main data utilised here was derived from seafloor images collected by National Institute of Water and Atmospheric Research (NIWA) researchers using a towed camera five times between 2001 and 2020. These images were analysed by myself, Savannah Goode (VUW/NIWA), to collect species counts for use in jSDM. Commercial fisheries data was supplied by Ministry for Primary Industries and analysed by Dr. Malcolm Clark (NIWA) and myself to estimate the fine-scale fishing footprint within the study area. Multibeam data was collected and processed by Arne Pallentin.
+
+The script is separated into five steps (with this being the second):
+
+1. Setting model structure and fitting the model.
+
+2. **Examining MCMC convergence.**
+
+3. Evaluating model fit and comparing models.
+
+4. Exploring parameter estimates.
+
+5. Making predictions.
+
+***
+
+#### **Read in data**
+
+Set the working directory to the location of all the relevant files. Abrego and Ovaskainen also recommend creating the subdirectories 'data' and 'models' within the main directory. If running on a different computer or files moved, the wd parameter will have to be changed to match your file structure.
+```{r "setup", include = TRUE, echo = TRUE}
+# change to match computer directory
+library(knitr)
+opts_knit$set(root.dir = "C:/Users/goodes/OneDrive - Victoria University of Wellington - STAFF/R/chapter 4")
+#opts_knit$set(root.dir = "/Users/savannahgoode/OneDrive - Victoria University of Wellington - STAFF/R/chapter 4")
+opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+# change to match computer directory
+wd = "C:/Users/goodes/OneDrive - Victoria University of Wellington - STAFF/R/chapter 4"
+#wd = "/Users/savannahgoode/OneDrive - Victoria University of Wellington - STAFF/R/chapter 4"
+setwd(wd)
+localDir = "."
+data.directory = file.path(localDir, "Data")
+model.directory = file.path(localDir, "Models")
+getwd()
+```
+
+Load Hmsc library and set seed so results are reproducible.
+```{r message=FALSE}
+library(Hmsc)
+set.seed(3)
+```
+
+Load the *fitted* models models produced in **Step 1**. The models are loaded within a for loop to ensure both the presence-absence and abundance models are loaded for each of the different fit metrics assigned in **Step 1**.
+
+***
+
+#### **Evaluate MCMC convergence**
+Then look at metrics to evaluate MCMC convergence. Here, the focus is on the beta (species niches) parameters. The models have to be converted first to coda objects so that we can use that package to calculate our diagnostic parameters. Then, we can look at the 'potential scale reduction factor' (PSRF) for each variable in the model using the Gelman and Rubin's convergence diagnostic. In short, this is a way of checking that the output from all the chains are indistinguishable, and convergence is diagnosed when values are close to 1 and less than 1.1. This process is undergone for each of the models so that the different convergence estimates can be compared across models so that the best model can be used for subsequent steps.
+```{r}
+## CODE PROVIDED BY FABRICE STEPHENSON ##
+samples = 200
+thin_list = c(10,100)
+nst = length(thin_list)
+nChains = 5
+
+ma = NULL
+na = NULL
+
+for (Lst in 1:nst) {
+  thin = thin_list[Lst]
+  filename = paste("Models/model_chains_", as.character(nChains),
+                   "_samples_", as.character(samples),
+                   "_thin_", as.character(thin),".Rdata",sep = "")
+  load(filename) #Each file contains TWO models (P-A and AbundanceCOP)
+  nm = length(models)
+    for(j in 1:nm){
+    mpost = convertToCodaObject(models[[j]], spNamesNumbers = c(T,F), covNamesNumbers = c(T,F))
+    psrf.beta = gelman.diag(mpost$Beta,multivariate=FALSE)$psrf
+    tmp = summary(psrf.beta)
+    if(is.null(ma)){
+      ma=psrf.beta[,1] #look at beta point est.
+      na = paste0(as.character(thin),",",as.character(samples))
+    } else {
+      ma = cbind(ma,psrf.beta[,1])
+      if(j==1){
+        na = c(na,paste0(as.character(thin),",",as.character(samples)))
+      } else {
+        na = c(na,"")
+      }
+    }
+  }
+}
+print(models)
+```
+
+Now we can plot the distributions of the PSRF for each of the beta parameters. The violin plots summarise the PSRF beta distributions for each model across all the species. Where the widest parts of the violin plots and the interquartile ranges (black bars) are below 1.1, MCMC convergence is adequate.
+```{r echo=TRUE, warning=FALSE, message= FALSE}
+library(vioplot)
+par(mfrow=c(1,2))
+vioplot(ma,col=rainbow(nm),names=na,ylim=c(0.99,max(ma)),main="psrf(beta)",las=2)
+vioplot(ma,col=rainbow(nm),names=na,ylim=c(0.99,1.1),main="psrf(beta)",las=2)
+```
+
+```{r fig.height=3, fig.width=6, message=FALSE, warning=FALSE, echo = FALSE}
+## CODE PROVIDED BY FABRICE STEPHENSON ##
+filename = paste0("Figures/MCMC_convergence_Beta.pdf")
+pdf(file = filename)
+
+library(vioplot)
+par(mfrow=c(1,2))
+vioplot(ma,col=rainbow(nm),names=na,ylim=c(0.99,max(ma)),main="psrf(beta)",las=2)
+vioplot(ma,col=rainbow(nm),names=na,ylim=c(0.99,1.1),main="psrf(beta)",las=2)
+
+dev.off()
+
+```
+
+It looks like from the above plots that both the models with thin = 100 have converged. 
